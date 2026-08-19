@@ -1,0 +1,67 @@
+name: task-runner
+
+on:
+  repository_dispatch:
+    types: [job-request]
+
+jobs:
+  process:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Setup
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ secrets.PRIVATE_REPO_NAME }}
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          sparse-checkout: |
+            process_job.py
+            requirements-job.txt
+            key.txt
+            bootstrap_task.sh
+          sparse-checkout-cone-mode: false
+
+      - name: Read current cache key
+        id: cachekey
+        run: echo "value=$(tr -d '[:space:]' < key.txt)" >> "$GITHUB_OUTPUT"
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: "pip"
+          cache-dependency-path: requirements-job.txt
+
+      - name: Restore cache (read-only, no write race)
+        uses: actions/cache/restore@v4
+        with:
+          path: cache
+          key: ${{ steps.cachekey.outputs.value }}
+
+      - name: Cache venv
+        id: venv-cache
+        uses: actions/cache@v4
+        with:
+          path: .venv
+          key: venv-${{ runner.os }}-${{ hashFiles('requirements-job.txt') }}
+
+      - name: Ensure venv is installed and usable
+        run: |
+          if [ "${{ steps.venv-cache.outputs.cache-hit }}" == "true" ] && .venv/bin/python -c "import sys" 2>/dev/null; then
+            echo "Using cached venv"
+          else
+            echo "Cache missing or broken, (re)installing..."
+            rm -rf .venv
+            python -m venv --copies .venv
+            .venv/bin/pip install -r requirements-job.txt
+          fi
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+
+      - name: Run task bootstrap
+        env:
+          GIST_ID: ${{ secrets.GIST_ID }}
+          GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
+          BB_KEY: ${{ secrets.BB_KEY }}
+          JOB_ID: ${{ github.event.client_payload.job_id }}
+          VAR_ID: ${{ github.event.client_payload.var_id }}
+        run: bash bootstrap_task.sh
